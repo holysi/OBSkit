@@ -1,0 +1,574 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>直播互動彈幕發射台</title>
+  <style>
+    :root {
+      --bg-dark: #0B1120;
+      --card-bg: rgba(30, 41, 59, 0.85);
+      --border-color: rgba(148, 163, 184, 0.2);
+      --accent: #6366F1;
+      --accent-hover: #4F46E5;
+      --text-main: #F8FAFC;
+      --text-muted: #94A3B8;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      min-height: 100vh;
+      background: radial-gradient(circle at top, #1E1B4B 0%, var(--bg-dark) 70%);
+      color: var(--text-main);
+      font-family: -apple-system, BlinkMacSystemFont, "Microsoft JhengHei", "PingFang TC", "Noto Sans TC", sans-serif;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 20px 16px 40px;
+    }
+
+    .container {
+      width: 100%;
+      max-width: 480px;
+      background: var(--card-bg);
+      border: 1px solid var(--border-color);
+      border-radius: 20px;
+      padding: 22px 20px;
+      backdrop-filter: blur(16px);
+      box-shadow: 0 20px 45px rgba(0, 0, 0, 0.45);
+    }
+
+    .header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 18px;
+    }
+
+    .title-group h1 {
+      font-size: 20px;
+      font-weight: 800;
+      letter-spacing: 0.02em;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .live-dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: #EF4444;
+      box-shadow: 0 0 10px #EF4444;
+      animation: pulse 1.6s infinite;
+    }
+
+    @keyframes pulse {
+      0%, 100% { transform: scale(1); opacity: 1; }
+      50% { transform: scale(1.25); opacity: 0.65; }
+    }
+
+    .mode-pill {
+      font-size: 12px;
+      padding: 4px 10px;
+      border-radius: 999px;
+      background: rgba(99, 102, 241, 0.18);
+      color: #A5B4FC;
+      border: 1px solid rgba(99, 102, 241, 0.35);
+      font-weight: 600;
+    }
+
+    .field-group {
+      margin-bottom: 16px;
+    }
+
+    .field-label {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text-muted);
+      margin-bottom: 8px;
+    }
+
+    .nickname-row {
+      display: flex;
+      gap: 8px;
+    }
+
+    input[type="text"], textarea {
+      width: 100%;
+      background: rgba(15, 23, 42, 0.75);
+      border: 1px solid var(--border-color);
+      border-radius: 12px;
+      padding: 12px 14px;
+      color: var(--text-main);
+      font-size: 15px;
+      outline: none;
+      transition: border-color 0.2s, box-shadow 0.2s;
+    }
+
+    input[type="text"]:focus, textarea:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.25);
+    }
+
+    .btn-secondary {
+      white-space: nowrap;
+      padding: 0 14px;
+      border-radius: 12px;
+      border: 1px solid var(--border-color);
+      background: rgba(51, 65, 85, 0.65);
+      color: var(--text-main);
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+
+    .btn-secondary:hover {
+      background: rgba(71, 85, 105, 0.85);
+    }
+
+    /* 色票選擇器 */
+    .color-row {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+
+    .color-swatch {
+      width: 34px;
+      height: 34px;
+      border-radius: 50%;
+      border: 2px solid rgba(255, 255, 255, 0.2);
+      cursor: pointer;
+      transition: transform 0.15s, border-color 0.15s, box-shadow 0.15s;
+    }
+
+    .color-swatch.active {
+      transform: scale(1.16);
+      border-color: #FFFFFF;
+      box-shadow: 0 0 12px rgba(255, 255, 255, 0.6);
+    }
+
+    /* 快捷罐頭訊息與隨機抽籤 */
+    .quick-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 8px;
+    }
+
+    .btn-gacha {
+      padding: 5px 12px;
+      border-radius: 999px;
+      border: 1px solid rgba(250, 204, 21, 0.45);
+      background: rgba(234, 179, 8, 0.16);
+      color: #FDE047;
+      font-size: 12px;
+      font-weight: 700;
+      cursor: pointer;
+      transition: transform 0.12s, background 0.15s;
+    }
+
+    .btn-gacha:hover {
+      background: rgba(234, 179, 8, 0.28);
+    }
+
+    .btn-gacha:active {
+      transform: scale(0.95);
+    }
+
+    .preset-chips {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      max-height: 150px;
+      overflow-y: auto;
+      padding: 2px 0;
+    }
+
+    .chip {
+      padding: 7px 12px;
+      border-radius: 999px;
+      background: rgba(15, 23, 42, 0.72);
+      border: 1px solid rgba(148, 163, 184, 0.25);
+      color: #E2E8F0;
+      font-size: 13px;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+
+    .chip:hover {
+      background: rgba(99, 102, 241, 0.25);
+      border-color: rgba(99, 102, 241, 0.6);
+      color: #FFFFFF;
+    }
+
+    .btn-send {
+      width: 100%;
+      padding: 14px;
+      border-radius: 14px;
+      border: none;
+      background: linear-gradient(135deg, #6366F1 0%, #8B5CF6 100%);
+      color: #FFFFFF;
+      font-size: 16px;
+      font-weight: 800;
+      letter-spacing: 0.04em;
+      cursor: pointer;
+      box-shadow: 0 10px 25px rgba(99, 102, 241, 0.35);
+      transition: transform 0.12s, opacity 0.2s;
+      margin-top: 6px;
+    }
+
+    .btn-send:active:not(:disabled) {
+      transform: scale(0.98);
+    }
+
+    .btn-send:disabled {
+      opacity: 0.55;
+      cursor: not-allowed;
+      background: #475569;
+      box-shadow: none;
+    }
+
+    #toast {
+      margin-top: 14px;
+      min-height: 22px;
+      text-align: center;
+      font-size: 13px;
+      font-weight: 600;
+      color: #34D399;
+      transition: opacity 0.25s;
+    }
+
+    #toast.error {
+      color: #F87171;
+    }
+
+    /* 本機測試輔助橫幅 (僅在未設定 GAS 網址時顯示) */
+    #dev-banner {
+      margin-top: 18px;
+      padding: 12px 14px;
+      border-radius: 12px;
+      background: rgba(15, 23, 42, 0.8);
+      border: 1px dashed rgba(148, 163, 184, 0.35);
+      font-size: 12px;
+      color: var(--text-muted);
+      line-height: 1.5;
+      display: none;
+    }
+
+    #dev-banner a {
+      color: #818CF8;
+      text-decoration: underline;
+      font-weight: 600;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <div class="title-group">
+        <h1><span class="live-dot"></span>直播彈幕發射台</h1>
+      </div>
+      <span id="mode-indicator" class="mode-pill">連線中...</span>
+    </div>
+
+    <!-- 1. 選填暱稱 -->
+    <div class="field-group">
+      <div class="field-label">
+        <span>你的暱稱（選填，留空則匿名發送）</span>
+      </div>
+      <div class="nickname-row">
+        <input type="text" id="nickname-input" maxlength="16" placeholder="例如：夜貓子阿凱（可不填）" />
+        <button type="button" id="btn-random-nick" class="btn-secondary">🎲 隨機暱稱</button>
+      </div>
+    </div>
+
+    <!-- 2. 彈幕顏色 -->
+    <div class="field-group">
+      <div class="field-label">
+        <span>彈幕顏色</span>
+        <span id="selected-color-name">純淨白</span>
+      </div>
+      <div id="color-row" class="color-row"></div>
+    </div>
+
+    <!-- 3. 訊息內容輸入 -->
+    <div class="field-group">
+      <div class="field-label">
+        <span>彈幕內容</span>
+        <span id="char-counter">0 / 45</span>
+      </div>
+      <input type="text" id="message-input" maxlength="45" placeholder="輸入想打上直播畫面的彈幕..." autocomplete="off" />
+    </div>
+
+    <!-- 4. 快捷句子點選 / 隨機抽一句 -->
+    <div class="field-group">
+      <div class="quick-header">
+        <span class="field-label" style="margin-bottom: 0;">⚡ 點擊快捷彈幕填入（或隨機抽）</span>
+        <button type="button" id="btn-random-msg" class="btn-gacha">🎲 隨機抽一句</button>
+      </div>
+      <div id="preset-chips" class="preset-chips"></div>
+    </div>
+
+    <!-- 5. 發送按鈕 -->
+    <button type="button" id="btn-send" class="btn-send">🚀 發射彈幕到直播畫面</button>
+    <div id="toast"></div>
+
+    <!-- 本機測試提示 -->
+    <div id="dev-banner">
+      💡 目前為<strong>本機模擬模式</strong>（尚未設定 <code>GAS_WEB_APP_URL</code>）。<br/>
+      你可以直接點此 <a href="./obs.html?debug=1" target="_blank">開啟 OBS 彈幕畫面分頁 (obs.html)</a>，在這邊發送彈幕會即時飛過隔壁分頁！
+    </div>
+  </div>
+
+  <script src="./config.js"></script>
+  <script>
+    (function() {
+      const nickInput = document.getElementById('nickname-input');
+      const btnRandomNick = document.getElementById('btn-random-nick');
+      const colorRow = document.getElementById('color-row');
+      const colorNameEl = document.getElementById('selected-color-name');
+      const msgInput = document.getElementById('message-input');
+      const charCounter = document.getElementById('char-counter');
+      const btnRandomMsg = document.getElementById('btn-random-msg');
+      const presetChipsEl = document.getElementById('preset-chips');
+      const btnSend = document.getElementById('btn-send');
+      const toastEl = document.getElementById('toast');
+      const modeIndicator = document.getElementById('mode-indicator');
+      const devBanner = document.getElementById('dev-banner');
+
+      const gasUrl = window.DANMAKU_CONFIG.resolveGasUrl();
+      const palette = window.DANMAKU_CONFIG.COLOR_PALETTE;
+      let viewerPresets = window.DANMAKU_CONFIG.DEFAULT_VIEWER_PRESETS.slice();
+      let fakeNicknames = window.DANMAKU_CONFIG.DEFAULT_FAKE_NICKNAMES.slice();
+      let cooldownSec = Number(window.DANMAKU_CONFIG.DEFAULT_SETTINGS.cooldown_sec) || 3;
+      let maxLength = Number(window.DANMAKU_CONFIG.DEFAULT_SETTINGS.max_length) || 45;
+      let selectedColor = palette[0].hex;
+      let isCooldown = false;
+
+      const bc = (typeof BroadcastChannel !== 'undefined')
+        ? new BroadcastChannel('obs_danmaku_local_channel')
+        : null;
+
+      // 載入記憶的暱稱
+      try {
+        const savedNick = localStorage.getItem('obs_danmaku_viewer_nick');
+        if (savedNick) nickInput.value = savedNick;
+      } catch (_) {}
+
+      nickInput.addEventListener('change', function() {
+        try {
+          localStorage.setItem('obs_danmaku_viewer_nick', nickInput.value.trim());
+        } catch (_) {}
+      });
+
+      // 渲染顏色選擇器
+      function renderColorSwatches() {
+        colorRow.innerHTML = '';
+        palette.forEach(function(item, idx) {
+          const btn = document.createElement('button');
+          btn.type = 'button';
+          btn.className = 'color-swatch' + (idx === 0 ? ' active' : '');
+          btn.style.backgroundColor = item.hex;
+          btn.title = item.name;
+          btn.addEventListener('click', function() {
+            selectedColor = item.hex;
+            colorNameEl.textContent = item.name;
+            Array.from(colorRow.children).forEach(function(c) {
+              c.classList.remove('active');
+            });
+            btn.classList.add('active');
+          });
+          colorRow.appendChild(btn);
+        });
+      }
+
+      // 渲染快捷罐頭彈幕膠囊
+      function renderPresetChips() {
+        presetChipsEl.innerHTML = '';
+        viewerPresets.forEach(function(phrase) {
+          const chip = document.createElement('button');
+          chip.type = 'button';
+          chip.className = 'chip';
+          chip.textContent = phrase;
+          chip.addEventListener('click', function() {
+            msgInput.value = phrase.substring(0, maxLength);
+            updateCharCount();
+            msgInput.focus();
+          });
+          presetChipsEl.appendChild(chip);
+        });
+      }
+
+      function updateCharCount() {
+        msgInput.maxLength = maxLength;
+        charCounter.textContent = msgInput.value.length + ' / ' + maxLength;
+      }
+
+      msgInput.addEventListener('input', updateCharCount);
+      msgInput.addEventListener('keydown', function(ev) {
+        if (ev.key === 'Enter' && !btnSend.disabled) {
+          ev.preventDefault();
+          sendDanmaku();
+        }
+      });
+
+      // 隨機暱稱按鈕
+      btnRandomNick.addEventListener('click', function() {
+        if (fakeNicknames.length === 0) return;
+        const pick = fakeNicknames[Math.floor(Math.random() * fakeNicknames.length)];
+        nickInput.value = pick;
+        try {
+          localStorage.setItem('obs_danmaku_viewer_nick', pick);
+        } catch (_) {}
+      });
+
+      // 隨機抽一句彈幕按鈕
+      btnRandomMsg.addEventListener('click', function() {
+        if (viewerPresets.length === 0) return;
+        const current = msgInput.value;
+        let pick = viewerPresets[Math.floor(Math.random() * viewerPresets.length)];
+        if (viewerPresets.length > 1 && pick === current) {
+          pick = viewerPresets[(viewerPresets.indexOf(pick) + 1) % viewerPresets.length];
+        }
+        msgInput.value = pick.substring(0, maxLength);
+        updateCharCount();
+      });
+
+      function showToast(text, isError) {
+        toastEl.textContent = text;
+        toastEl.className = isError ? 'error' : '';
+      }
+
+      function startCooldownTimer(sec) {
+        isCooldown = true;
+        btnSend.disabled = true;
+        let remaining = sec;
+        btnSend.textContent = '⏳ 冷卻中 (' + remaining + 's)...';
+
+        const interval = setInterval(function() {
+          remaining -= 1;
+          if (remaining <= 0) {
+            clearInterval(interval);
+            isCooldown = false;
+            btnSend.disabled = false;
+            btnSend.textContent = '🚀 發射彈幕到直播畫面';
+          } else {
+            btnSend.textContent = '⏳ 冷卻中 (' + remaining + 's)...';
+          }
+        }, 1000);
+      }
+
+      async function sendDanmaku() {
+        if (isCooldown) return;
+
+        const rawText = msgInput.value.trim();
+        const rawNick = nickInput.value.trim();
+
+        if (!rawText) {
+          showToast('⚠️ 請先輸入彈幕內容或點選下方快捷句子！', true);
+          msgInput.focus();
+          return;
+        }
+
+        const cleanText = window.DANMAKU_CONFIG.maskText(rawText.substring(0, maxLength));
+        const cleanNick = window.DANMAKU_CONFIG.maskText(rawNick.substring(0, 16));
+
+        const payload = {
+          nickname: cleanNick,
+          text: cleanText,
+          color: selectedColor,
+          ts: Date.now()
+        };
+
+        // 1. 總是同步發送到本機 BroadcastChannel / localStorage (方便導播本機預覽)
+        if (bc) {
+          bc.postMessage({ type: 'NEW_DANMAKU', payload: payload });
+        }
+        try {
+          localStorage.setItem('obs_danmaku_local_msg', JSON.stringify(payload));
+        } catch (_) {}
+
+        startCooldownTimer(cooldownSec);
+        msgInput.value = '';
+        updateCharCount();
+
+        // 2. 若有設定 GAS 網址，透過 text/plain POST 送往雲端佇列 (免 CORS OPTIONS 預檢)
+        if (gasUrl) {
+          showToast('🚀 正在發射彈幕...', false);
+          try {
+            const res = await fetch(gasUrl, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'text/plain;charset=utf-8'
+              },
+              body: JSON.stringify(payload)
+            });
+            const data = await res.json();
+            if (data && data.ok) {
+              showToast('✅ 已發射：' + (cleanNick ? cleanNick + '：' : '') + cleanText, false);
+            } else {
+              showToast('⚠️ 發送失敗：' + ((data && data.error) || '未知錯誤'), true);
+            }
+          } catch (err) {
+            showToast('⚠️ 網路連線異常，請稍後再試', true);
+          }
+        } else {
+          showToast('✅ 已發射至本機 OBS 預覽：' + (cleanNick ? cleanNick + '：' : '') + cleanText, false);
+        }
+      }
+
+      btnSend.addEventListener('click', sendDanmaku);
+
+      // 初始化向 GAS 同步快捷詞庫與冷卻秒數
+      async function initRemoteConfig() {
+        if (!gasUrl) {
+          modeIndicator.textContent = '本機模擬模式';
+          devBanner.style.display = 'block';
+          return;
+        }
+
+        modeIndicator.textContent = '雲端連線中...';
+        try {
+          const res = await fetch(gasUrl + '?action=init&_t=' + Date.now());
+          const data = await res.json();
+          if (data && data.ok) {
+            if (data.settings) {
+              cooldownSec = Number(data.settings.cooldown_sec) || cooldownSec;
+              maxLength = Number(data.settings.max_length) || maxLength;
+              updateCharCount();
+            }
+            if (Array.isArray(data.viewerPresets) && data.viewerPresets.length > 0) {
+              viewerPresets = data.viewerPresets;
+              renderPresetChips();
+            }
+            if (Array.isArray(data.fakeNicknames) && data.fakeNicknames.length > 0) {
+              fakeNicknames = data.fakeNicknames;
+            }
+            modeIndicator.textContent = '🟢 雲端連線正常';
+          } else {
+            modeIndicator.textContent = '⚠️ 雲端回應異常';
+          }
+        } catch (_) {
+          modeIndicator.textContent = '⚠️ 離線備援模式';
+        }
+      }
+
+      renderColorSwatches();
+      renderPresetChips();
+      updateCharCount();
+      initRemoteConfig();
+    })();
+  </script>
+</body>
+</html>

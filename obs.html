@@ -1,0 +1,366 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>OBS 動態彈幕疊加層 (Browser Source)</title>
+  <style>
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      user-select: none;
+    }
+
+    html, body {
+      width: 100vw;
+      height: 100vh;
+      overflow: hidden;
+      background: transparent !important;
+      font-family: "Microsoft JhengHei", "PingFang TC", "Noto Sans TC", "Heiti TC", sans-serif;
+    }
+
+    #danmaku-stage {
+      position: relative;
+      width: 100vw;
+      height: 100vh;
+      overflow: hidden;
+      pointer-events: none;
+    }
+
+    .danmaku-item {
+      position: absolute;
+      left: 100vw;
+      white-space: nowrap;
+      font-weight: 800;
+      line-height: 1.2;
+      letter-spacing: 0.03em;
+      will-change: transform;
+      /* 雙層立體描邊 + 陰影，確保在全白或全黑直播畫面上都 100% 清晰 */
+      -webkit-text-stroke: 1.5px rgba(0, 0, 0, 0.92);
+      paint-order: stroke fill;
+      text-shadow:
+        2px 2px 0 rgba(0, 0, 0, 0.9),
+        -1px -1px 0 rgba(0, 0, 0, 0.9),
+        1px -1px 0 rgba(0, 0, 0, 0.9),
+        -1px 1px 0 rgba(0, 0, 0, 0.9),
+        0 3px 8px rgba(0, 0, 0, 0.65);
+      animation-name: fly-left;
+      animation-timing-function: linear;
+      animation-fill-mode: forwards;
+    }
+
+    @keyframes fly-left {
+      from {
+        transform: translate3d(0, 0, 0);
+      }
+      to {
+        transform: translate3d(var(--fly-distance, -2500px), 0, 0);
+      }
+    }
+
+    /* 啟動時左下角微型狀態提示，3.5 秒後自動淡出消失（不影響正式直播畫面） */
+    #status-badge {
+      position: fixed;
+      left: 16px;
+      bottom: 16px;
+      padding: 6px 12px;
+      border-radius: 999px;
+      background: rgba(15, 23, 42, 0.78);
+      color: #E2E8F0;
+      font-size: 13px;
+      font-weight: 600;
+      border: 1px solid rgba(148, 163, 184, 0.3);
+      backdrop-filter: blur(6px);
+      transition: opacity 0.6s ease;
+      z-index: 9999;
+      pointer-events: none;
+    }
+
+    #status-badge.hidden {
+      opacity: 0;
+    }
+  </style>
+</head>
+<body>
+  <div id="danmaku-stage"></div>
+  <div id="status-badge">正在初始化彈幕引擎...</div>
+
+  <script src="./config.js"></script>
+  <script>
+    (function() {
+      const stage = document.getElementById('danmaku-stage');
+      const badge = document.getElementById('status-badge');
+      const urlParams = new URLSearchParams(window.location.search);
+      const isDebug = urlParams.get('debug') === '1';
+
+      const gasUrl = window.DANMAKU_CONFIG.resolveGasUrl();
+      let settings = Object.assign({}, window.DANMAKU_CONFIG.DEFAULT_SETTINGS);
+      let botPresets = window.DANMAKU_CONFIG.DEFAULT_BOT_PRESETS.slice();
+      let fakeNicknames = window.DANMAKU_CONFIG.DEFAULT_FAKE_NICKNAMES.slice();
+      const palette = window.DANMAKU_CONFIG.COLOR_PALETTE;
+
+      // 軌道狀態管理：紀錄每個軌道最後一發彈幕的發射時間與預估寬度，防止文字重疊
+      let tracks = [];
+      let lastSeenId = 0;
+
+      // 機器人發射順序狀態 (支援不重複洗牌袋 Shuffle Bag 與依序循環)
+      let botSeqIndex = 0;
+      let botShuffleBag = [];
+      let botTimer = null;
+
+      function showStatus(text, autoHideMs) {
+        badge.textContent = text;
+        badge.classList.remove('hidden');
+        if (!isDebug && autoHideMs) {
+          setTimeout(function() {
+            badge.classList.add('hidden');
+          }, autoHideMs);
+        }
+      }
+
+      /**
+       * 挑選最適合的水平軌道（防重疊演算法）
+       */
+      function allocateTrack(estimatedWidthPx, durationSec) {
+        const stageHeight = window.innerHeight || 1080;
+        const stageWidth = window.innerWidth || 1920;
+        const areaRatio = Math.min(100, Math.max(10, Number(settings.danmaku_area_percent) || 65)) / 100;
+        const fontSize = Math.min(72, Math.max(20, Number(settings.danmaku_font_size_px) || 38));
+        const trackHeight = Math.round(fontSize * 1.42);
+        const usableHeight = Math.max(trackHeight, Math.floor(stageHeight * areaRatio) - 16);
+        const trackCount = Math.max(1, Math.floor(usableHeight / trackHeight));
+
+        while (tracks.length < trackCount) {
+          tracks.push({ freeAt: 0, clearRightEdgeAt: 0 });
+        }
+
+        const now = performance.now();
+        const totalDistance = stageWidth + estimatedWidthPx + 60;
+        const speedPxPerMs = totalDistance / (durationSec * 1000);
+        // 該彈幕完整進入畫面右緣加上 48px 安全間距所需的毫秒數
+        const occupyRightEdgeMs = ((estimatedWidthPx + 48) / speedPxPerMs);
+
+        // 優先找尋右緣已完全淨空的軌道（由上往下找前段空軌，並帶一點隨機性讓畫面自然）
+        const availableIndices = [];
+        for (let i = 0; i < trackCount; i++) {
+          if (now >= tracks[i].clearRightEdgeAt) {
+            availableIndices.push(i);
+          }
+        }
+
+        let chosenIdx = 0;
+        if (availableIndices.length > 0) {
+          // 前 60% 機率選偏上方可用軌道，40% 機率隨機選可用軌道，模擬真實直播彈幕分佈
+          if (Math.random() < 0.6) {
+            chosenIdx = availableIndices[0];
+          } else {
+            chosenIdx = availableIndices[Math.floor(Math.random() * availableIndices.length)];
+          }
+        } else {
+          // 所有軌道都在忙時，挑選最早淨空右緣的那一條軌道
+          let earliestTime = Infinity;
+          for (let i = 0; i < trackCount; i++) {
+            if (tracks[i].clearRightEdgeAt < earliestTime) {
+              earliestTime = tracks[i].clearRightEdgeAt;
+              chosenIdx = i;
+            }
+          }
+        }
+
+        tracks[chosenIdx].clearRightEdgeAt = now + occupyRightEdgeMs;
+        tracks[chosenIdx].freeAt = now + (durationSec * 1000);
+
+        return 10 + chosenIdx * trackHeight;
+      }
+
+      /**
+       * 在 OBS 畫面上發射一則彈幕（真人與機器人共用同一套渲染函式，外觀 100% 相同）
+       */
+      function spawnDanmaku(msg) {
+        if (!msg || !msg.text) return;
+
+        const nickname = (msg.nickname || '').trim();
+        const displayStr = nickname ? (nickname + '：' + msg.text) : msg.text;
+        const fontSize = Math.min(72, Math.max(20, Number(settings.danmaku_font_size_px) || 38));
+        // 加入極微幅速度差 (±6%) 讓同批彈幕更有生命力
+        const baseSpeed = Math.min(25, Math.max(3, Number(settings.danmaku_speed_sec) || 8.5));
+        const durationSec = baseSpeed * (0.95 + Math.random() * 0.1);
+        const opacity = Math.min(1, Math.max(0.1, Number(settings.danmaku_opacity) || 0.95));
+        const color = msg.color || palette[Math.floor(Math.random() * palette.length)].hex;
+
+        const el = document.createElement('div');
+        el.className = 'danmaku-item';
+        el.textContent = displayStr;
+        el.style.fontSize = fontSize + 'px';
+        el.style.color = color;
+        el.style.opacity = String(opacity);
+        el.style.animationDuration = durationSec.toFixed(2) + 's';
+
+        stage.appendChild(el);
+
+        // 量測實際寬度以精算軌道防重疊與飛行終點距離
+        const actualWidth = el.offsetWidth || (displayStr.length * fontSize);
+        const stageWidth = window.innerWidth || 1920;
+        const flyDistance = -(stageWidth + actualWidth + 120);
+        const topPx = allocateTrack(actualWidth, durationSec);
+
+        el.style.top = topPx + 'px';
+        el.style.setProperty('--fly-distance', flyDistance + 'px');
+
+        el.addEventListener('animationend', function() {
+          if (el.parentNode) {
+            el.parentNode.removeChild(el);
+          }
+        });
+      }
+
+      /**
+       * 機器人暖場彈幕排程器（支援隨機秒數 Jitter + 假暱稱自動混搭）
+       */
+      function scheduleNextBotMessage() {
+        if (botTimer) {
+          clearTimeout(botTimer);
+          botTimer = null;
+        }
+
+        const minSec = Math.max(0.8, Number(settings.bot_interval_min_sec) || 3.5);
+        const maxSec = Math.max(minSec, Number(settings.bot_interval_max_sec) || 7.5);
+        const delayMs = Math.round((minSec + Math.random() * (maxSec - minSec)) * 1000);
+
+        botTimer = setTimeout(function() {
+          if (settings.bot_enabled && botPresets.length > 0) {
+            const preset = pickNextBotPreset();
+            if (preset && preset.text) {
+              // 決定是否掛上假暱稱（若預設項目本身已填寫指定暱稱則優先使用）
+              let chosenNick = (preset.nickname || '').trim();
+              const prob = Number(settings.bot_fake_nickname_prob);
+              const effectiveProb = isNaN(prob) ? 0.65 : prob;
+
+              if (!chosenNick && fakeNicknames.length > 0 && Math.random() < effectiveProb) {
+                chosenNick = fakeNicknames[Math.floor(Math.random() * fakeNicknames.length)];
+              }
+
+              const chosenColor = preset.color || palette[Math.floor(Math.random() * palette.length)].hex;
+
+              spawnDanmaku({
+                nickname: chosenNick,
+                text: preset.text,
+                color: chosenColor
+              });
+            }
+          }
+          scheduleNextBotMessage();
+        }, delayMs);
+      }
+
+      function pickNextBotPreset() {
+        if (botPresets.length === 0) return null;
+        if (settings.bot_order_mode === 'sequential') {
+          const item = botPresets[botSeqIndex % botPresets.length];
+          botSeqIndex = (botSeqIndex + 1) % botPresets.length;
+          return item;
+        }
+
+        // 預設 random：使用不重複洗牌袋 (Shuffle Bag)，確保每一句都輪過一次才重新洗牌
+        if (botShuffleBag.length === 0) {
+          botShuffleBag = botPresets.slice();
+          for (let i = botShuffleBag.length - 1; i > 0; i--) {
+            const j = Math.floor(Math.random() * (i + 1));
+            const temp = botShuffleBag[i];
+            botShuffleBag[i] = botShuffleBag[j];
+            botShuffleBag[j] = temp;
+          }
+        }
+        return botShuffleBag.pop();
+      }
+
+      function applyRemoteConfig(data) {
+        if (data.settings) {
+          settings = Object.assign({}, settings, data.settings);
+        }
+        if (Array.isArray(data.botPresets) && data.botPresets.length > 0) {
+          botPresets = data.botPresets;
+        }
+        if (Array.isArray(data.fakeNicknames) && data.fakeNicknames.length > 0) {
+          fakeNicknames = data.fakeNicknames;
+        }
+      }
+
+      /**
+       * 啟動本機離線模擬接聽 (BroadcastChannel + localStorage 事件雙通道)
+       */
+      function setupLocalSimulationListeners() {
+        if (typeof BroadcastChannel !== 'undefined') {
+          const bc = new BroadcastChannel('obs_danmaku_local_channel');
+          bc.onmessage = function(ev) {
+            if (ev.data && ev.data.type === 'NEW_DANMAKU') {
+              spawnDanmaku(ev.data.payload);
+            }
+          };
+        }
+
+        window.addEventListener('storage', function(ev) {
+          if (ev.key === 'obs_danmaku_local_msg' && ev.newValue) {
+            try {
+              const parsed = JSON.parse(ev.newValue);
+              spawnDanmaku(parsed);
+            } catch (_) {}
+          }
+        });
+      }
+
+      /**
+       * 啟動雲端 GAS 輪詢迴圈
+       */
+      async function startCloudPolling() {
+        try {
+          const initRes = await fetch(gasUrl + '?action=init&_t=' + Date.now());
+          const initData = await initRes.json();
+          if (initData && initData.ok) {
+            applyRemoteConfig(initData);
+            lastSeenId = Number(initData.latestId || 0);
+            showStatus('🟢 已連線至 GAS 雲端彈幕伺服器 (機器人暖場：' + (settings.bot_enabled ? '開啟' : '關閉') + ')', 3500);
+          }
+        } catch (err) {
+          showStatus('⚠️ GAS 連線失敗，已切換為本機備援暖場模式', 4500);
+        }
+
+        const pollInterval = Number(window.DANMAKU_CONFIG.OBS_POLL_INTERVAL_MS) || 1500;
+        setInterval(async function() {
+          try {
+            const res = await fetch(gasUrl + '?action=poll&since=' + lastSeenId + '&_t=' + Date.now());
+            const data = await res.json();
+            if (data && data.ok) {
+              applyRemoteConfig(data);
+              if (Array.isArray(data.messages) && data.messages.length > 0) {
+                // 若一次拉回多則觀眾彈幕，稍微錯開 180ms 發射讓視覺更自然不擠成一團
+                data.messages.forEach(function(m, idx) {
+                  if (m.id > lastSeenId) {
+                    lastSeenId = m.id;
+                  }
+                  setTimeout(function() {
+                    spawnDanmaku(m);
+                  }, idx * 180);
+                });
+              }
+            }
+          } catch (_) {
+            // 網路瞬斷時靜默重試，不中斷機器人暖場
+          }
+        }, pollInterval);
+      }
+
+      // 初始化啟動
+      setupLocalSimulationListeners();
+      scheduleNextBotMessage();
+
+      if (gasUrl) {
+        startCloudPolling();
+      } else {
+        showStatus('🧪 本機模擬模式運作中（機器人暖場已啟動，可開 index.html 同步發送彈幕）', 4000);
+      }
+    })();
+  </script>
+</body>
+</html>
