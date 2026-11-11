@@ -331,7 +331,10 @@
     </div>
   </div>
 
-  <script src="./config.js"></script>
+  <script>
+    // 強制每次載入最新 config.js，防止瀏覽器快取舊設定
+    document.write('<script src="./config.js?v=' + Date.now() + '"><\/script>');
+  </script>
   <script>
     (function() {
       const nickInput = document.getElementById('nickname-input');

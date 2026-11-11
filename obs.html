@@ -86,7 +86,10 @@
   <div id="danmaku-stage"></div>
   <div id="status-badge">正在初始化彈幕引擎...</div>
 
-  <script src="./config.js"></script>
+  <script>
+    // 強制每次載入最新 config.js，防止 OBS Browser Source 快取舊的空網址設定
+    document.write('<script src="./config.js?v=' + Date.now() + '"><\/script>');
+  </script>
   <script>
     (function() {
       const stage = document.getElementById('danmaku-stage');
@@ -96,13 +99,14 @@
 
       const gasUrl = window.DANMAKU_CONFIG.resolveGasUrl();
       let settings = Object.assign({}, window.DANMAKU_CONFIG.DEFAULT_SETTINGS);
-      let botPresets = window.DANMAKU_CONFIG.DEFAULT_BOT_PRESETS.slice();
+      let botPresets = gasUrl ? [] : window.DANMAKU_CONFIG.DEFAULT_BOT_PRESETS.slice();
       let fakeNicknames = window.DANMAKU_CONFIG.DEFAULT_FAKE_NICKNAMES.slice();
       const palette = window.DANMAKU_CONFIG.COLOR_PALETTE;
 
       // 軌道狀態管理：紀錄每個軌道最後一發彈幕的發射時間與預估寬度，防止文字重疊
       let tracks = [];
       let lastSeenId = 0;
+      let badgeTimer = null;
 
       // 機器人發射順序狀態 (支援不重複洗牌袋 Shuffle Bag 與依序循環)
       let botSeqIndex = 0;
@@ -112,8 +116,12 @@
       function showStatus(text, autoHideMs) {
         badge.textContent = text;
         badge.classList.remove('hidden');
+        if (badgeTimer) {
+          clearTimeout(badgeTimer);
+          badgeTimer = null;
+        }
         if (!isDebug && autoHideMs) {
-          setTimeout(function() {
+          badgeTimer = setTimeout(function() {
             badge.classList.add('hidden');
           }, autoHideMs);
         }
@@ -279,18 +287,26 @@
         if (data.settings) {
           settings = Object.assign({}, settings, data.settings);
         }
-        if (Array.isArray(data.botPresets) && data.botPresets.length > 0) {
-          botPresets = data.botPresets;
+        if (Array.isArray(data.botPresets)) {
+          const prevJson = JSON.stringify(botPresets);
+          const nextJson = JSON.stringify(data.botPresets);
+          if (prevJson !== nextJson) {
+            botPresets = data.botPresets;
+            // 當 Google Sheet 的機器人清單有變更時，立即清空舊的洗牌袋，確保下一句立刻套用新清單
+            botShuffleBag = [];
+            botSeqIndex = 0;
+          }
         }
-        if (Array.isArray(data.fakeNicknames) && data.fakeNicknames.length > 0) {
+        if (Array.isArray(data.fakeNicknames)) {
           fakeNicknames = data.fakeNicknames;
         }
       }
 
       /**
-       * 啟動本機離線模擬接聽 (BroadcastChannel + localStorage 事件雙通道)
+       * 啟動本機離線模擬接聽 (僅在未設定 GAS 網址時啟用，避免雲端模式同瀏覽器重複顯示)
        */
       function setupLocalSimulationListeners() {
+        if (gasUrl) return;
         if (typeof BroadcastChannel !== 'undefined') {
           const bc = new BroadcastChannel('obs_danmaku_local_channel');
           bc.onmessage = function(ev) {
@@ -311,30 +327,38 @@
       }
 
       /**
-       * 啟動雲端 GAS 輪詢迴圈
+       * 啟動雲端 GAS 輪詢迴圈（採用序列式 awaiting 輪詢，避免 GAS 回應較慢時請求重疊）
        */
       async function startCloudPolling() {
         try {
-          const initRes = await fetch(gasUrl + '?action=init&_t=' + Date.now());
+          const initRes = await fetch(gasUrl + '?action=init&_t=' + Date.now(), {
+            cache: 'no-store'
+          });
           const initData = await initRes.json();
           if (initData && initData.ok) {
             applyRemoteConfig(initData);
             lastSeenId = Number(initData.latestId || 0);
-            showStatus('🟢 已連線至 GAS 雲端彈幕伺服器 (機器人暖場：' + (settings.bot_enabled ? '開啟' : '關閉') + ')', 3500);
+            showStatus('🟢 已連線至 GAS 雲端彈幕伺服器 (機器人暖場：' + (settings.bot_enabled ? '開啟，共 ' + botPresets.length + ' 句' : '關閉') + ')', 3500);
           }
         } catch (err) {
+          botPresets = window.DANMAKU_CONFIG.DEFAULT_BOT_PRESETS.slice();
           showStatus('⚠️ GAS 連線失敗，已切換為本機備援暖場模式', 4500);
         }
 
+        // 先完成雲端初始詞庫同步後，再啟動機器人排程器，避免先噴出預設罐頭詞庫
+        scheduleNextBotMessage();
+
         const pollInterval = Number(window.DANMAKU_CONFIG.OBS_POLL_INTERVAL_MS) || 1500;
-        setInterval(async function() {
+
+        async function pollTick() {
           try {
-            const res = await fetch(gasUrl + '?action=poll&since=' + lastSeenId + '&_t=' + Date.now());
+            const res = await fetch(gasUrl + '?action=poll&since=' + lastSeenId + '&_t=' + Date.now(), {
+              cache: 'no-store'
+            });
             const data = await res.json();
             if (data && data.ok) {
               applyRemoteConfig(data);
               if (Array.isArray(data.messages) && data.messages.length > 0) {
-                // 若一次拉回多則觀眾彈幕，稍微錯開 180ms 發射讓視覺更自然不擠成一團
                 data.messages.forEach(function(m, idx) {
                   if (m.id > lastSeenId) {
                     lastSeenId = m.id;
@@ -347,17 +371,21 @@
             }
           } catch (_) {
             // 網路瞬斷時靜默重試，不中斷機器人暖場
+          } finally {
+            setTimeout(pollTick, pollInterval);
           }
-        }, pollInterval);
+        }
+
+        setTimeout(pollTick, pollInterval);
       }
 
       // 初始化啟動
       setupLocalSimulationListeners();
-      scheduleNextBotMessage();
 
       if (gasUrl) {
         startCloudPolling();
       } else {
+        scheduleNextBotMessage();
         showStatus('🧪 本機模擬模式運作中（機器人暖場已啟動，可開 index.html 同步發送彈幕）', 4000);
       }
     })();
