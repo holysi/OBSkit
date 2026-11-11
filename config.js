@@ -12,7 +12,7 @@
  */
 window.DANMAKU_CONFIG = {
   // 👇 請將部署好的 Google Apps Script Web App 網址貼在這裡（留空則自動啟用本機模擬模式）
-  GAS_WEB_APP_URL: '',
+  GAS_WEB_APP_URL: 'https://script.google.com/macros/s/AKfycby-54esEhE61NCGi8Q4H6JUGVT8hGoRL_o5-Pj5VWH_T4XQvxv-5_SeN1py1eCJPQc/exec',
 
   // OBS 輪詢 GAS 後端的間隔毫秒數（建議 1500ms = 1.5 秒）
   OBS_POLL_INTERVAL_MS: 1500,
