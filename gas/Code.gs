@@ -122,14 +122,26 @@ function setupSheet() {
 }
 
 /**
- * HTTP GET 端點
+ * HTTP GET 端點（同時支援 JSON 與 JSONP `?callback=...`，徹底繞過 OBS Browser Source CEF 的 CORS Preflight 限制）
  * - ?action=init : 觀眾網頁或 OBS 啟動時讀取設定、快捷詞庫與目前最新 ID
  * - ?action=poll&since=<id> : OBS 每 1.5 秒輪詢新彈幕 + 批次將未歸檔彈幕寫入 Logs Sheet
+ * - ?action=send&nickname=...&text=...&color=... : 備援 GET/JSONP 發送端點
  */
 function doGet(e) {
+  const params = (e && e.parameter) ? e.parameter : {};
+  const callback = params.callback || '';
   try {
-    const params = (e && e.parameter) ? e.parameter : {};
     const action = params.action || 'init';
+
+    if (action === 'send') {
+      const resObj = handleSendMessage_({
+        nickname: params.nickname || '',
+        text: params.text || '',
+        color: params.color || ''
+      });
+      return jsonResponse_(resObj, callback);
+    }
+
     const config = loadSystemConfig_(false);
     const queue = getQueue_();
     const latestId = queue.length > 0 ? queue[queue.length - 1].id : 0;
@@ -151,7 +163,7 @@ function doGet(e) {
         settings: config.settings,
         botPresets: config.botPresets,
         fakeNicknames: config.fakeNicknames
-      });
+      }, callback);
     }
 
     // 預設 action === 'init'
@@ -163,12 +175,12 @@ function doGet(e) {
       botPresets: config.botPresets,
       fakeNicknames: config.fakeNicknames,
       viewerPresets: config.viewerPresets
-    });
+    }, callback);
   } catch (err) {
     return jsonResponse_({
       ok: false,
       error: String(err && err.message ? err.message : err)
-    });
+    }, callback);
   }
 }
 
@@ -177,17 +189,31 @@ function doGet(e) {
  * 接收 Content-Type: text/plain;charset=utf-8 的 JSON 字串以避免瀏覽器 CORS OPTIONS 預檢請求
  */
 function doPost(e) {
-  const lock = LockService.getScriptLock();
   try {
     const rawBody = (e && e.postData && e.postData.contents) ? e.postData.contents : '{}';
     const payload = JSON.parse(rawBody);
+    const resObj = handleSendMessage_(payload);
+    return jsonResponse_(resObj, '');
+  } catch (err) {
+    return jsonResponse_({
+      ok: false,
+      error: String(err && err.message ? err.message : err)
+    }, '');
+  }
+}
 
+/**
+ * 處理觀眾新彈幕寫入 CacheService 環狀佇列
+ */
+function handleSendMessage_(payload) {
+  const lock = LockService.getScriptLock();
+  try {
     const config = loadSystemConfig_(false);
     const maxLen = Number(config.settings.max_length) || 45;
 
     let text = String(payload.text || '').trim();
     if (!text) {
-      return jsonResponse_({ ok: false, error: '訊息內容不能為空' });
+      return { ok: false, error: '訊息內容不能為空' };
     }
     if (text.length > maxLen) {
       text = text.substring(0, maxLen);
@@ -228,18 +254,18 @@ function doPost(e) {
     cache.put(CACHE_KEYS.QUEUE, JSON.stringify(queue), QUEUE_CACHE_TTL_SEC);
     lock.releaseLock();
 
-    return jsonResponse_({
+    return {
       ok: true,
       message: msg
-    });
+    };
   } catch (err) {
     try {
       if (lock.hasLock()) lock.releaseLock();
     } catch (_) {}
-    return jsonResponse_({
+    return {
       ok: false,
       error: String(err && err.message ? err.message : err)
-    });
+    };
   }
 }
 
@@ -431,8 +457,15 @@ function styleHeader_(sheet, colCount, widths) {
   }
 }
 
-function jsonResponse_(obj) {
+function jsonResponse_(obj, callback) {
+  const jsonStr = JSON.stringify(obj);
+  const cleanCb = String(callback || '').trim();
+  if (cleanCb && /^[a-zA-Z0-9_$.]+$/.test(cleanCb)) {
+    return ContentService
+      .createTextOutput(cleanCb + '(' + jsonStr + ');')
+      .setMimeType(ContentService.MimeType.JAVASCRIPT);
+  }
   return ContentService
-    .createTextOutput(JSON.stringify(obj))
+    .createTextOutput(jsonStr)
     .setMimeType(ContentService.MimeType.JSON);
 }

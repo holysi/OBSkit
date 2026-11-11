@@ -327,14 +327,78 @@
       }
 
       /**
-       * 啟動雲端 GAS 輪詢迴圈（採用序列式 awaiting 輪詢，避免 GAS 回應較慢時請求重疊）
+       * 使用 JSONP (<script src="...">) 呼叫 GAS，100% 避開 OBS Browser Source (CEF) 的 CORS OPTIONS 預檢阻擋
+       */
+      let jsonpCounter = 0;
+      function requestGasJsonp(queryString, timeoutMs) {
+        return new Promise(function(resolve, reject) {
+          const cbName = '__obs_danmaku_cb_' + Date.now() + '_' + (++jsonpCounter);
+          const script = document.createElement('script');
+          let settled = false;
+
+          const timer = setTimeout(function() {
+            if (settled) return;
+            settled = true;
+            cleanup();
+            reject(new Error('JSONP_TIMEOUT'));
+          }, timeoutMs || 10000);
+
+          function cleanup() {
+            clearTimeout(timer);
+            try {
+              delete window[cbName];
+            } catch (_) {
+              window[cbName] = undefined;
+            }
+            if (script.parentNode) {
+              script.parentNode.removeChild(script);
+            }
+          }
+
+          window[cbName] = function(data) {
+            if (settled) return;
+            settled = true;
+            cleanup();
+            resolve(data);
+          };
+
+          script.onload = function() {
+            // 若 script 載入完成但 callback 未被執行，代表雲端 Code.gs 尚未更新為支援 callback 的版本
+            setTimeout(function() {
+              if (!settled) {
+                settled = true;
+                cleanup();
+                reject(new Error('GAS_NEEDS_JSONP_UPDATE'));
+              }
+            }, 50);
+          };
+
+          script.onerror = function() {
+            if (settled) return;
+            settled = true;
+            cleanup();
+            reject(new Error('JSONP_NETWORK_ERROR'));
+          };
+
+          const sep = gasUrl.indexOf('?') === -1 ? '?' : '&';
+          script.src = gasUrl + sep + queryString + '&callback=' + cbName + '&_t=' + Date.now();
+          document.head.appendChild(script);
+        });
+      }
+
+      // 攔截舊版 Code.gs 回傳純 JSON 時在 <script> 產生的語法錯誤，避免污染 OBS 日誌
+      window.addEventListener('error', function(ev) {
+        if (ev && ev.filename && ev.filename.indexOf('script.google') !== -1) {
+          ev.preventDefault();
+        }
+      }, true);
+
+      /**
+       * 啟動雲端 GAS 輪詢迴圈（優先使用免預檢 JSONP，確保 OBS CEF 150 零 CORS 錯誤）
        */
       async function startCloudPolling() {
         try {
-          const initRes = await fetch(gasUrl + '?action=init&_t=' + Date.now(), {
-            cache: 'no-store'
-          });
-          const initData = await initRes.json();
+          const initData = await requestGasJsonp('action=init', 10000);
           if (initData && initData.ok) {
             applyRemoteConfig(initData);
             lastSeenId = Number(initData.latestId || 0);
@@ -342,20 +406,21 @@
           }
         } catch (err) {
           botPresets = window.DANMAKU_CONFIG.DEFAULT_BOT_PRESETS.slice();
-          showStatus('⚠️ GAS 連線失敗，已切換為本機備援暖場模式', 4500);
+          if (err && err.message === 'GAS_NEEDS_JSONP_UPDATE') {
+            showStatus('⚠️ 請至 GAS 貼上新版 Code.gs 並「管理部署 > 建立新版本」以解除 OBS CORS 限制', 15000);
+          } else {
+            showStatus('⚠️ GAS 連線失敗，已切換為本機備援暖場模式', 6000);
+          }
         }
 
-        // 先完成雲端初始詞庫同步後，再啟動機器人排程器，避免先噴出預設罐頭詞庫
+        // 完成初始詞庫同步後啟動機器人排程器
         scheduleNextBotMessage();
 
         const pollInterval = Number(window.DANMAKU_CONFIG.OBS_POLL_INTERVAL_MS) || 1500;
 
         async function pollTick() {
           try {
-            const res = await fetch(gasUrl + '?action=poll&since=' + lastSeenId + '&_t=' + Date.now(), {
-              cache: 'no-store'
-            });
-            const data = await res.json();
+            const data = await requestGasJsonp('action=poll&since=' + lastSeenId, 10000);
             if (data && data.ok) {
               applyRemoteConfig(data);
               if (Array.isArray(data.messages) && data.messages.length > 0) {

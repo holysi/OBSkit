@@ -472,6 +472,62 @@
         }, 1000);
       }
 
+      let jsonpCounter = 0;
+      function requestGasJsonp(queryString, timeoutMs) {
+        return new Promise(function(resolve, reject) {
+          const cbName = '__viewer_danmaku_cb_' + Date.now() + '_' + (++jsonpCounter);
+          const script = document.createElement('script');
+          let settled = false;
+
+          const timer = setTimeout(function() {
+            if (settled) return;
+            settled = true;
+            cleanup();
+            reject(new Error('JSONP_TIMEOUT'));
+          }, timeoutMs || 10000);
+
+          function cleanup() {
+            clearTimeout(timer);
+            try {
+              delete window[cbName];
+            } catch (_) {
+              window[cbName] = undefined;
+            }
+            if (script.parentNode) {
+              script.parentNode.removeChild(script);
+            }
+          }
+
+          window[cbName] = function(data) {
+            if (settled) return;
+            settled = true;
+            cleanup();
+            resolve(data);
+          };
+
+          script.onload = function() {
+            setTimeout(function() {
+              if (!settled) {
+                settled = true;
+                cleanup();
+                reject(new Error('GAS_NEEDS_JSONP_UPDATE'));
+              }
+            }, 50);
+          };
+
+          script.onerror = function() {
+            if (settled) return;
+            settled = true;
+            cleanup();
+            reject(new Error('JSONP_NETWORK_ERROR'));
+          };
+
+          const sep = gasUrl.indexOf('?') === -1 ? '?' : '&';
+          script.src = gasUrl + sep + queryString + '&callback=' + cbName + '&_t=' + Date.now();
+          document.head.appendChild(script);
+        });
+      }
+
       async function sendDanmaku() {
         if (isCooldown) return;
 
@@ -494,7 +550,7 @@
           ts: Date.now()
         };
 
-        // 1. 總是同步發送到本機 BroadcastChannel / localStorage (方便導播本機預覽)
+        // 1. 本機 BroadcastChannel / localStorage 通知
         if (bc) {
           bc.postMessage({ type: 'NEW_DANMAKU', payload: payload });
         }
@@ -506,26 +562,39 @@
         msgInput.value = '';
         updateCharCount();
 
-        // 2. 若有設定 GAS 網址，透過 text/plain POST 送往雲端佇列 (免 CORS OPTIONS 預檢)
+        // 2. 若有設定 GAS 網址，優先使用 JSONP (若雲端尚未更新則自動 fallback 至 POST)
         if (gasUrl) {
           showToast('🚀 正在發射彈幕...', false);
           try {
-            const res = await fetch(gasUrl, {
-              method: 'POST',
-              headers: {
-                'Content-Type': 'text/plain;charset=utf-8'
-              },
-              body: JSON.stringify(payload)
-            });
-            const data = await res.json();
+            const qs = 'action=send&nickname=' + encodeURIComponent(cleanNick) +
+                       '&text=' + encodeURIComponent(cleanText) +
+                       '&color=' + encodeURIComponent(selectedColor);
+            const data = await requestGasJsonp(qs, 8000);
             if (data && data.ok) {
               showToast('✅ 已發射：' + (cleanNick ? cleanNick + '：' : '') + cleanText, false);
-            } else {
-              showToast('⚠️ 發送失敗：' + ((data && data.error) || '未知錯誤'), true);
+              return;
             }
-          } catch (err) {
-            showToast('⚠️ 網路連線異常，請稍後再試', true);
+          } catch (_) {
+            // Fallback to POST for older Code.gs deployments
+            try {
+              const res = await fetch(gasUrl, {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'text/plain;charset=utf-8'
+                },
+                body: JSON.stringify(payload)
+              });
+              const data = await res.json();
+              if (data && data.ok) {
+                showToast('✅ 已發射：' + (cleanNick ? cleanNick + '：' : '') + cleanText, false);
+                return;
+              }
+            } catch (err2) {
+              showToast('⚠️ 網路連線異常，請稍後再試', true);
+              return;
+            }
           }
+          showToast('⚠️ 發送失敗，請稍後再試', true);
         } else {
           showToast('✅ 已發射至本機 OBS 預覽：' + (cleanNick ? cleanNick + '：' : '') + cleanText, false);
         }
@@ -543,8 +612,13 @@
 
         modeIndicator.textContent = '雲端連線中...';
         try {
-          const res = await fetch(gasUrl + '?action=init&_t=' + Date.now());
-          const data = await res.json();
+          let data = null;
+          try {
+            data = await requestGasJsonp('action=init', 8000);
+          } catch (_) {
+            const res = await fetch(gasUrl + '?action=init&_t=' + Date.now());
+            data = await res.json();
+          }
           if (data && data.ok) {
             if (data.settings) {
               cooldownSec = Number(data.settings.cooldown_sec) || cooldownSec;
